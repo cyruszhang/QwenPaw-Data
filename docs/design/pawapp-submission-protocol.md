@@ -12,6 +12,16 @@ Engine version compatible with all of PawApp vNext. Adapters must probe
 endpoint; JSON mode reports unsupported and returns 501 for submit/query/replay.
 Do not silently fall back to non-idempotent session/chat creation.
 
+`GET /api/v1/capabilities/analysis` returns readiness version 1 and the boolean
+`model_configured`. It checks the explicit model, or the same local Agent
+Configuration preferences/environment fallback used by independent runs. The
+caller namespace does not select a different model configuration. No credentials
+or configuration error details are returned, and no provider call is made.
+This is configuration readiness, not a connectivity guarantee. The Host also
+checks its authorized datasource against `/api/v1/datasources`, then returns a
+blocked result with the App settings entry before creating a task if setup is
+missing. Durable submission protocol support alone does not imply readiness.
+
 ## Submit and reconcile
 
 ```http

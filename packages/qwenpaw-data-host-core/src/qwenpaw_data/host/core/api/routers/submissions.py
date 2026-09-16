@@ -67,6 +67,18 @@ async def submission_capabilities(
     }
 
 
+@router.get("/capabilities/analysis")
+async def analysis_capabilities(
+    state: ServiceState = Depends(get_state),
+) -> dict:
+    """Configuration readiness only, never credentials or a provider probe."""
+    ready = state.analysis_model_ready
+    return {
+        "readiness_version": 1,
+        "model_configured": bool(ready and await ready()),
+    }
+
+
 async def _accept_and_start(
     body: SubmitRunRequest,
     identity: Identity,

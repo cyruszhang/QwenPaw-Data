@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, TYPE_CHECKING
 from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 
 from fastapi import Request
 
@@ -36,6 +37,7 @@ class ServiceState:
     feedback: FeedbackStore
     hosts: QwenPawDataHostRegistry
     submissions: SQLSubmissionStore | None = None
+    analysis_model_ready: Callable[[], Awaitable[bool]] | None = None
     cron_manager: Any = None
     tasks: set[asyncio.Task] = field(default_factory=set)
 

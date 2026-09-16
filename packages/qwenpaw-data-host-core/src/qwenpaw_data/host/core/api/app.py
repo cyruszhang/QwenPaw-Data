@@ -164,6 +164,17 @@ def create_app(
                 )
             return build_model_from_env()
 
+        async def analysis_model_ready() -> bool:
+            # Inspect the same local Agent Configuration/env fallback used by
+            # independent runs. This constructs a model but makes no LLM call.
+            if model is not None:
+                return True
+            try:
+                await resolve_model()
+                return True
+            except Exception:
+                return False
+
         async def confirmed_settlement_cards(session_id: str) -> list[dict[str, Any]]:
             session = await sessions_store.get(session_id)
             return await settlement_store.list_by_session(
@@ -191,6 +202,7 @@ def create_app(
             attachments=attachment_store,
             feedback=feedback_store,
             submissions=submissions_store,
+            analysis_model_ready=analysis_model_ready,
             hosts=QwenPawDataHostRegistry(
                 home=resolved_home,
                 model=model,
