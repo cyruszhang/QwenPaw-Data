@@ -82,6 +82,21 @@ class ChatRow(UserIdColumn, Base):
     )
 
 
+class SubmissionRow(Base):
+    """Permanent idempotency receipt; never removed with session history."""
+
+    __tablename__ = "submissions"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    submission_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
 class AttachmentRow(UserIdColumn, Base):
     __tablename__ = "attachments"
 
@@ -210,4 +225,3 @@ class UserActiveModelRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
-

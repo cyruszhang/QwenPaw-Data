@@ -41,6 +41,7 @@ from qwenpaw_data.host.core.api.routers import preferences as preferences_router
 from qwenpaw_data.host.core.api.routers import sessions as sessions_router
 from qwenpaw_data.host.core.api.routers import settlement as settlement_router
 from qwenpaw_data.host.core.api.routers import steer as steer_router
+from qwenpaw_data.host.core.api.routers import submissions as submissions_router
 from qwenpaw_data.host.core.api.routers import trace as trace_router
 from qwenpaw_data.host.core.cron import CronManager
 from qwenpaw_data.host.core.domain.identity import Identity
@@ -105,6 +106,7 @@ def create_app(
         reset_runtime_registry()
 
         engine = None
+        submissions_store = None
         store_mode = (os.environ.get(STORE_ENV) or "").strip().lower()
         if store_mode == "json":
             sessions_store: Any = JSONSessionStore(store_root)
@@ -131,6 +133,7 @@ def create_app(
                 SQLSessionStore,
                 SQLSettlementStore,
             )
+            from qwenpaw_data.host.core.store.submissions import SQLSubmissionStore
 
             engine, factory = create_engine_and_factory(
                 resolve_db_url(resolved_home),
@@ -144,6 +147,9 @@ def create_app(
             settlement_store = SQLSettlementStore(factory)
             attachment_store = SQLAttachmentStore(factory)
             feedback_store = SQLFeedbackStore(factory)
+            submissions_store = SQLSubmissionStore(factory)
+            # Reconcile accepted runs before serving requests or starting jobs.
+            await submissions_store.recover()
 
         async def resolve_model() -> Any:
             """Prefer the local user's configured default model over env."""
@@ -184,6 +190,7 @@ def create_app(
             settlement=settlement_store,
             attachments=attachment_store,
             feedback=feedback_store,
+            submissions=submissions_store,
             hosts=QwenPawDataHostRegistry(
                 home=resolved_home,
                 model=model,
@@ -240,6 +247,7 @@ def create_app(
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.include_router(sessions_router.router, prefix="/api/v1")
     app.include_router(chats_router.router, prefix="/api/v1")
+    app.include_router(submissions_router.router, prefix="/api/v1")
     app.include_router(console_router.router, prefix="/api/v1")
     app.include_router(events_router.router, prefix="/api/v1")
     app.include_router(plan_router.router, prefix="/api/v1")

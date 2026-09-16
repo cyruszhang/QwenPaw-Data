@@ -328,6 +328,23 @@ def _apply_session(row: SessionRow, session: Session) -> None:
     row.deleted_at = session.deleted_at
 
 
+def _session_to_row(session: Session) -> SessionRow:
+    return SessionRow(
+        id=session.id,
+        user_id=session.identity.user_id,
+        agent_id=session.agent_id,
+        title=session.title,
+        datasource_id=session.datasource_id,
+        channel=session.channel,
+        chat_count=session.chat_count,
+        parent_session_id=session.parent_session_id,
+        forked_from_chat_id=session.forked_from_chat_id,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+        deleted_at=session.deleted_at,
+    )
+
+
 class SQLSessionStore:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
@@ -339,22 +356,7 @@ class SQLSessionStore:
                 raise RuntimeError(
                     f"CONFLICT: session already exists: {session.id}"
                 )
-            db.add(
-                SessionRow(
-                    id=session.id,
-                    user_id=session.identity.user_id,
-                    agent_id=session.agent_id,
-                    title=session.title,
-                    datasource_id=session.datasource_id,
-                    channel=session.channel,
-                    chat_count=session.chat_count,
-                    parent_session_id=session.parent_session_id,
-                    forked_from_chat_id=session.forked_from_chat_id,
-                    created_at=session.created_at,
-                    updated_at=session.updated_at,
-                    deleted_at=session.deleted_at,
-                )
-            )
+            db.add(_session_to_row(session))
             await db.commit()
 
     async def get(self, session_id: str) -> Session:
@@ -484,6 +486,29 @@ def _apply_chat(row: ChatRow, chat: Chat) -> None:
     row.updated_at = chat.updated_at
 
 
+def _chat_to_row(chat: Chat) -> ChatRow:
+    return ChatRow(
+        id=chat.id,
+        session_id=chat.session_id,
+        user_id=chat.identity.user_id,
+        sequence=chat.sequence,
+        user_input=chat.user_input,
+        datasource_id=chat.datasource_id,
+        kind=chat.kind,
+        status=chat.status,
+        last_sequence_number=chat.last_sequence_number,
+        started_at=chat.started_at,
+        completed_at=chat.completed_at,
+        active_duration_ms=chat.active_duration_ms,
+        error_json=chat.error,
+        plan=chat.plan,
+        artifact_comments_json=list(chat.artifact_comments),
+        attachments_json=list(chat.attachments),
+        created_at=chat.created_at,
+        updated_at=chat.updated_at,
+    )
+
+
 class SQLChatStore:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
@@ -493,28 +518,7 @@ class SQLChatStore:
             existing = await db.get(ChatRow, chat.id)
             if existing is not None:
                 raise RuntimeError(f"CONFLICT: chat already exists: {chat.id}")
-            db.add(
-                ChatRow(
-                    id=chat.id,
-                    session_id=chat.session_id,
-                    user_id=chat.identity.user_id,
-                    sequence=chat.sequence,
-                    user_input=chat.user_input,
-                    datasource_id=chat.datasource_id,
-                    kind=chat.kind,
-                    status=chat.status,
-                    last_sequence_number=chat.last_sequence_number,
-                    started_at=chat.started_at,
-                    completed_at=chat.completed_at,
-                    active_duration_ms=chat.active_duration_ms,
-                    error_json=chat.error,
-                    plan=chat.plan,
-                    artifact_comments_json=list(chat.artifact_comments),
-                    attachments_json=list(chat.attachments),
-                    created_at=chat.created_at,
-                    updated_at=chat.updated_at,
-                )
-            )
+            db.add(_chat_to_row(chat))
             await db.commit()
 
     async def get(
