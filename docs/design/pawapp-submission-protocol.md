@@ -8,7 +8,8 @@ Direct/Delegated presentation, and any Main Agent continuation.
 This branch implements **submission protocol 1**. It does not declare a released
 Engine version compatible with all of PawApp vNext. Adapters must probe
 `GET /api/v1/capabilities/submissions` and require `protocol_version: 1`,
-`durable_submissions: true`, and `event_replay: true`. Older Engines lack this
+`durable_submissions: true`, and `event_replay: true`. Task answer/cancel also
+requires `durable_commands: true`. Older Engines lack this
 endpoint; JSON mode reports unsupported and returns 501 for submit/query/replay.
 Do not silently fall back to non-idempotent session/chat creation.
 
@@ -91,6 +92,53 @@ run is missing, replay returns 410 and retries still return the original receipt
 Durability assumes the same persistent database: deleting/restoring/replacing
 that database is not a supported transparent failover operation.
 
+## Durable answer and cancel commands
+
+`POST /api/v1/submissions/{submission_id}/commands` applies a command to the
+original accepted run. The request contains `protocol_version: 1`, a stable
+`command_id`, and one of these payloads:
+
+```json
+{
+  "command_id": "answer_clarification_1",
+  "kind": "answer",
+  "request_id": "clarification_1",
+  "answers": [{
+    "question": "Which period?",
+    "selected_options": ["Q1"],
+    "custom_text": null
+  }]
+}
+```
+
+```json
+{
+  "command_id": "cancel_task_1",
+  "kind": "cancel",
+  "reason": "No longer needed"
+}
+```
+
+The `submission_commands` table permanently binds
+`(user_id, submission_id, command_id)` to a kind and request digest before the
+runtime is touched. Identical retries return the stored receipt and never apply
+the effect twice. Reusing a command ID with different content returns 409.
+Commands and their lookups use the submission's caller namespace, so a receipt
+cannot be read or applied through another namespace.
+
+The response state is `accepted`, `rejected`, or `unknown`. An answer is rejected
+with `reason: stale_request` when its clarification is absent, already resolved,
+or no longer belongs to the active runtime. Cancel targets the bound run; a
+terminal run returns an accepted receipt with `reason: already_terminal` and
+retains its output. A crash after the command receipt is prepared but before an
+outcome is committed is reported as `unknown`; it is never guessed from a lost
+HTTP response.
+
+`GET /api/v1/submissions/{submission_id}/commands/{command_id}` returns the same
+receipt, `unknown` for a prepared command, or `not_found` when no receipt exists.
+The Host must persist its own command before POST, reconcile an uncertain send by
+this lookup, and keep the same command ID on every retry.
+
 ## Replay and recovery
 
 `GET /api/v1/submissions/{submission_id}/events` resolves the receipt under the
@@ -152,11 +200,13 @@ submissions, input conflicts, separate runs and caller namespaces, transaction
 rollback, lost responses, cancellation of HTTP requests, hard process exit
 after commit, restart recovery, live disconnect/replay, retained receipts after
 history deletion, unavailable databases, bearer checks, and unsupported JSON
-mode. Existing host-core regression tests cover console/chat compatibility.
+mode. Command tests cover idempotent answer/cancel effects, content conflicts,
+stale clarification receipts, namespace isolation, and the prepared/unknown
+recovery window. Existing host-core regression tests cover console/chat
+compatibility.
 
-The next integration is the QwenPaw Host Data adapter: map its existing
-`submit/query/attach` interface to these routes and turn replayed Engine output
-into Host TaskEvents. Task-scoped answer/cancel receipts, Main Agent wake-up,
-action dispatch, task cards, configuration readiness, and public/private
-skill/tool access are separate implementation gates. The protocol probe above
-must not be used to claim those gates are complete.
+The QwenPaw Host Data adapter consumes these submission and command routes and
+projects replayed Engine output into Host TaskEvents. Main Agent continuation
+with arbitrary follow-on tools, grant UI, and public/private skill/tool access
+remain separate implementation gates. The protocol probe above must not be used
+to claim those gates are complete.

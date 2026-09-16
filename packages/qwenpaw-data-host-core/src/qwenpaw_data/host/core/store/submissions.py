@@ -18,7 +18,12 @@ from qwenpaw_data.host.core.api.models.stream_objects import (
     dump_stream_object,
     parse_stream_object,
 )
-from qwenpaw_data.host.core.db.tables import ChatEventRow, ChatRow, SubmissionRow
+from qwenpaw_data.host.core.db.tables import (
+    ChatEventRow,
+    ChatRow,
+    SubmissionCommandRow,
+    SubmissionRow,
+)
 from qwenpaw_data.host.core.domain.identity import Identity
 from qwenpaw_data.host.core.domain.session import Session
 from qwenpaw_data.host.core.store.sql_store import _chat_to_row, _session_to_row
@@ -38,9 +43,32 @@ class SubmissionRecord:
     run_id: str
 
 
+@dataclass(frozen=True)
+class SubmissionCommandRecord:
+    user_id: str
+    submission_id: str
+    command_id: str
+    kind: str
+    request_digest: str
+    state: str
+    reason: str | None
+
+
 def _record(row: SubmissionRow) -> SubmissionRecord:
     return SubmissionRecord(
         row.user_id, row.submission_id, row.request_digest, row.session_id, row.run_id
+    )
+
+
+def _command_record(row: SubmissionCommandRow) -> SubmissionCommandRecord:
+    return SubmissionCommandRecord(
+        row.user_id,
+        row.submission_id,
+        row.command_id,
+        row.kind,
+        row.request_digest,
+        "unknown" if row.state == "prepared" else row.state,
+        row.reason,
     )
 
 
@@ -60,6 +88,87 @@ class SQLSubmissionStore:
         async with self._sessions() as db:
             row = await db.get(SubmissionRow, (user_id, submission_id))
             return _record(row) if row is not None else None
+
+    async def lookup_command(
+        self,
+        user_id: str,
+        submission_id: str,
+        command_id: str,
+    ) -> SubmissionCommandRecord | None:
+        async with self._sessions() as db:
+            row = await db.get(
+                SubmissionCommandRow,
+                (user_id, submission_id, command_id),
+            )
+            return _command_record(row) if row is not None else None
+
+    async def prepare_command(
+        self,
+        *,
+        record: SubmissionRecord,
+        command_id: str,
+        kind: str,
+        request_digest: str,
+    ) -> tuple[SubmissionCommandRecord, bool]:
+        existing = await self.lookup_command(
+            record.user_id,
+            record.submission_id,
+            command_id,
+        )
+        if existing is not None:
+            if existing.kind != kind or existing.request_digest != request_digest:
+                raise RuntimeError("CONFLICT: command_id was used for different inputs")
+            return existing, False
+        row = SubmissionCommandRow(
+            user_id=record.user_id,
+            submission_id=record.submission_id,
+            command_id=command_id,
+            kind=kind,
+            request_digest=request_digest,
+            state="prepared",
+        )
+        try:
+            async with self._sessions() as db, db.begin():
+                db.add(row)
+                await db.flush()
+        except IntegrityError:
+            existing = await self.lookup_command(
+                record.user_id,
+                record.submission_id,
+                command_id,
+            )
+            if existing is None:
+                raise
+            if existing.kind != kind or existing.request_digest != request_digest:
+                raise RuntimeError(
+                    "CONFLICT: command_id was used for different inputs"
+                ) from None
+            return existing, False
+        return _command_record(row), True
+
+    async def finish_command(
+        self,
+        record: SubmissionCommandRecord,
+        *,
+        state: str,
+        reason: str | None = None,
+    ) -> SubmissionCommandRecord:
+        if state not in {"accepted", "rejected"}:
+            raise ValueError("invalid command outcome")
+        async with self._sessions() as db, db.begin():
+            row = await db.get(
+                SubmissionCommandRow,
+                (record.user_id, record.submission_id, record.command_id),
+            )
+            if row is None:
+                raise LookupError("submission command not found")
+            if row.state != "prepared":
+                return _command_record(row)
+            row.state = state
+            row.reason = reason
+            row.updated_at = utcnow()
+            await db.flush()
+            return _command_record(row)
 
     @staticmethod
     def _check_digest(record: SubmissionRecord, digest: str) -> None:

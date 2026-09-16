@@ -97,6 +97,26 @@ class SubmissionRow(Base):
     )
 
 
+class SubmissionCommandRow(Base):
+    """Permanent command identity and outcome for a durable submission."""
+
+    __tablename__ = "submission_commands"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    submission_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    command_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="prepared")
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
 class AttachmentRow(UserIdColumn, Base):
     __tablename__ = "attachments"
 

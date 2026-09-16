@@ -34,6 +34,7 @@ worker. Without `QWENPAW_DATA_API_TOKEN`, only loopback clients are accepted.
 | `POST /sessions/{sid}/chats` | Start a turn in an existing session: `{"text": ..., "datasource_id": ...}` → `{"chat": {...}}`; 404 without a session, 409 while a turn is active |
 | `GET /capabilities/submissions` | Discover durable submission protocol support (SQL only) |
 | `POST /submissions` · `GET /submissions/{id}` | Atomically create an independent session/run with an idempotent submission ID; query its original identity and status |
+| `POST /submissions/{id}/commands` · `GET /submissions/{id}/commands/{command_id}` | Durably answer the run's active clarification or cancel the original run; retry and reconcile by command ID |
 | `GET /submissions/{id}/events` | Replay and follow the accepted run's persisted events with the same SSE cursor contract |
 | `GET /sessions/{sid}/chats` | List a session's chats |
 | `POST /sessions/{sid}/chats/{cid}/stop` | Cancel a running turn |

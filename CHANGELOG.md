@@ -14,6 +14,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   without automatically rerunning it. See the
   [submission protocol](docs/design/pawapp-submission-protocol.md); JSON mode
   explicitly declines this protocol.
+- Durable submission commands let a PawApp backend answer the active
+  clarification or cancel the original run with idempotent command receipts,
+  scoped lookup, conflict detection, and explicit unknown recovery state.
 
 ## [0.3.1] - 2026-09-10
 

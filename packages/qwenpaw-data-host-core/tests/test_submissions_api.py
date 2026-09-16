@@ -18,11 +18,24 @@ from qwenpaw_data.host.core.api.routers import submissions as routes
 from qwenpaw_data.host.core.db.tables import ChatRow, SessionRow, SubmissionRow
 from qwenpaw_data.host.core.domain.identity import Identity
 from qwenpaw_data.host.core.runtime.chat_runtime import ChatRuntime
+from qwenpaw_data.host.core.runtime.registry import get_runtime_registry
 from qwenpaw_data.host.core.store import submissions as submission_store
 from qwenpaw_data.host.core.stream.output_stream import OutputStream
 
 PAYLOAD = {"submission_id": "sub_test", "text": "分析收入", "datasource_id": "ds1"}
 URL = "/api/v1/submissions"
+ANSWER = {
+    "protocol_version": 1,
+    "command_id": "cmd_answer_1",
+    "kind": "answer",
+    "request_id": "clarification_1",
+    "answers": [
+        {
+            "question": "Which period?",
+            "selected_options": ["Q1"],
+        }
+    ],
+}
 
 
 @pytest.fixture(autouse=True)
@@ -221,6 +234,106 @@ async def test_http_cancellation_cannot_cancel_acceptance(
         await asyncio.gather(*list(state.tasks))
         assert len(starts) == 1
         assert (await http.get(f"{URL}/sub_test")).json()["run"]["run_id"] == starts[0]
+
+
+async def test_answer_command_is_durable_idempotent_and_scoped(tmp_path, starts):
+    class Runtime:
+        def __init__(self):
+            self.answers = []
+
+        def answer(self, *, clarification_id, result):
+            self.answers.append((clarification_id, result))
+
+    async with service(tmp_path) as (http, _state):
+        run = (await http.post(URL, json=PAYLOAD)).json()["run"]
+        runtime = Runtime()
+        get_runtime_registry().register(run["run_id"], runtime)  # type: ignore[arg-type]
+        try:
+            first = await http.post(f"{URL}/sub_test/commands", json=ANSWER)
+            retry = await http.post(f"{URL}/sub_test/commands", json=ANSWER)
+            lookup = await http.get(f"{URL}/sub_test/commands/{ANSWER['command_id']}")
+            assert first.status_code == 200
+            assert first.json()["state"] == "accepted"
+            assert retry.json() == first.json() == lookup.json()
+            assert runtime.answers == [
+                (
+                    "clarification_1",
+                    {
+                        "status": "answered",
+                        "answers": ANSWER["answers"],
+                    },
+                )
+            ]
+            conflict = await http.post(
+                f"{URL}/sub_test/commands",
+                json={
+                    **ANSWER,
+                    "answers": [{**ANSWER["answers"][0], "selected_options": ["Q2"]}],
+                },
+            )
+            assert conflict.status_code == 409
+            assert (
+                await http.get(
+                    f"{URL}/sub_test/commands/{ANSWER['command_id']}",
+                    headers={"X-User-Id": "other"},
+                )
+            ).status_code == 404
+        finally:
+            get_runtime_registry().unregister(run["run_id"])
+
+
+async def test_stale_answer_is_a_stable_rejected_receipt(tmp_path, starts):
+    async with service(tmp_path) as (http, _state):
+        await http.post(URL, json=PAYLOAD)
+        first = await http.post(f"{URL}/sub_test/commands", json=ANSWER)
+        retry = await http.post(f"{URL}/sub_test/commands", json=ANSWER)
+        assert first.json()["state"] == "rejected"
+        assert first.json()["reason"] == "stale_request"
+        assert retry.json() == first.json()
+
+
+async def test_cancel_command_targets_original_run_once(tmp_path, starts):
+    class Runtime:
+        def __init__(self):
+            self.cancels = 0
+
+        async def cancel(self):
+            self.cancels += 1
+
+    body = {
+        "protocol_version": 1,
+        "command_id": "cmd_cancel_1",
+        "kind": "cancel",
+        "reason": "user_requested",
+    }
+    async with service(tmp_path) as (http, _state):
+        run = (await http.post(URL, json=PAYLOAD)).json()["run"]
+        runtime = Runtime()
+        get_runtime_registry().register(run["run_id"], runtime)  # type: ignore[arg-type]
+        try:
+            first = await http.post(f"{URL}/sub_test/commands", json=body)
+            retry = await http.post(f"{URL}/sub_test/commands", json=body)
+            assert first.json()["state"] == "accepted"
+            assert retry.json() == first.json()
+            assert runtime.cancels == 1
+        finally:
+            get_runtime_registry().unregister(run["run_id"])
+
+
+async def test_prepared_command_queries_as_unknown_after_restart_window(
+    tmp_path, starts
+):
+    async with service(tmp_path) as (http, state):
+        record = await accept_without_scheduling(state)
+        command, created = await state.submissions.prepare_command(
+            record=record,
+            command_id=ANSWER["command_id"],
+            kind="answer",
+            request_digest="a" * 64,
+        )
+        assert created and command.state == "unknown"
+        lookup = await http.get(f"{URL}/sub_test/commands/{ANSWER['command_id']}")
+        assert lookup.json()["state"] == "unknown"
 
 
 async def test_restart_after_commit_before_scheduling_is_interrupted(tmp_path, starts):
@@ -480,6 +593,7 @@ async def test_json_store_explicitly_declines_protocol(tmp_path, monkeypatch):
             "protocol_version": None,
             "durable_submissions": False,
             "event_replay": False,
+            "durable_commands": False,
         }
         for response in (
             await http.post(URL, json=PAYLOAD),

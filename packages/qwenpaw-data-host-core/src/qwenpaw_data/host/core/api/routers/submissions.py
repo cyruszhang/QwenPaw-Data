@@ -12,13 +12,21 @@ from fastapi.responses import StreamingResponse
 from qwenpaw_data.host.core.api.deps import ServiceState, get_identity, get_state
 from qwenpaw_data.host.core.api.errors import map_domain_error, raise_api
 from qwenpaw_data.host.core.api.models.submissions import (
+    SubmissionCommandRequest,
+    SubmissionCommandSchema,
     SubmissionLookupSchema,
     SubmissionRunSchema,
     SubmitRunRequest,
 )
 from qwenpaw_data.host.core.api.routers.events import chat_events
 from qwenpaw_data.host.core.domain.identity import Identity
+from qwenpaw_data.host.core.domain.clarification import (
+    ClarificationConflict,
+    ClarificationNotFound,
+)
 from qwenpaw_data.host.core.runtime.chat_runtime import ChatRuntime
+from qwenpaw_data.host.core.runtime.registry import get_runtime_registry
+from qwenpaw_data.host.core.stream.output_stream import OutputStream
 
 if TYPE_CHECKING:
     from qwenpaw_data.host.core.store.submissions import (
@@ -64,6 +72,7 @@ async def submission_capabilities(
         "protocol_version": 1 if supported else None,
         "durable_submissions": supported,
         "event_replay": supported,
+        "durable_commands": supported,
     }
 
 
@@ -137,6 +146,128 @@ async def lookup_submission(
     if record is None:
         return SubmissionLookupSchema(submission_id=submission_id, state="not_found")
     return await _lookup_response(store, record)
+
+
+def _command_response(record) -> SubmissionCommandSchema:
+    return SubmissionCommandSchema(
+        submission_id=record.submission_id,
+        command_id=record.command_id,
+        kind=record.kind,
+        state=record.state,
+        reason=record.reason,
+    )
+
+
+async def _cancel_submission(record, state: ServiceState) -> str | None:
+    chat = await state.chats.get(record.run_id, session_id=record.session_id)
+    runtime = get_runtime_registry().get(record.run_id)
+    if runtime is not None:
+        await runtime.cancel()
+        return None
+    if chat.status == "running":
+        # The receipt binds cancellation to this exact run. If its in-memory
+        # runtime disappeared, persist the same authoritative terminal frame.
+        await OutputStream(
+            state.events,
+            session_id=record.session_id,
+            chat_id=record.run_id,
+            identity=chat.identity,
+        ).response_cancelled()
+        chat.cancel()
+        await state.chats.reload_event_watermark(chat)
+        await state.chats.save(chat)
+        return None
+    return "already_terminal"
+
+
+@router.post(
+    "/submissions/{submission_id}/commands",
+    response_model=SubmissionCommandSchema,
+)
+async def execute_submission_command(
+    submission_id: str,
+    body: SubmissionCommandRequest,
+    identity: Identity = Depends(get_identity),
+    state: ServiceState = Depends(get_state),
+) -> SubmissionCommandSchema:
+    store = _store(state)
+    submission = await store.lookup(identity.user_id, submission_id)
+    if submission is None:
+        raise_api("NOT_FOUND", "Submission not found", status=404)
+    try:
+        command, created = await store.prepare_command(
+            record=submission,
+            command_id=body.command_id,
+            kind=body.kind,
+            request_digest=body.request_digest(),
+        )
+    except Exception as exc:
+        http = map_domain_error(exc)
+        if http:
+            raise http from exc
+        raise
+    # Only the durable insert winner may apply the command. Concurrent and
+    # post-response retries observe the same receipt without another effect.
+    if not created:
+        return _command_response(command)
+    try:
+        reason = None
+        if body.kind == "answer":
+            runtime = get_runtime_registry().get(submission.run_id)
+            if runtime is None:
+                raise ClarificationNotFound()
+            runtime.answer(
+                clarification_id=body.request_id or "",
+                result={
+                    "status": "answered",
+                    "answers": [
+                        answer.model_dump(exclude_none=True)
+                        for answer in body.answers or []
+                    ],
+                },
+            )
+        else:
+            reason = await _cancel_submission(submission, state)
+        command = await store.finish_command(
+            command,
+            state="accepted",
+            reason=reason,
+        )
+    except (ClarificationConflict, ClarificationNotFound):
+        command = await store.finish_command(
+            command,
+            state="rejected",
+            reason="stale_request",
+        )
+    return _command_response(command)
+
+
+@router.get(
+    "/submissions/{submission_id}/commands/{command_id}",
+    response_model=SubmissionCommandSchema,
+)
+async def lookup_submission_command(
+    submission_id: str,
+    command_id: str,
+    identity: Identity = Depends(get_identity),
+    state: ServiceState = Depends(get_state),
+) -> SubmissionCommandSchema:
+    store = _store(state)
+    submission = await store.lookup(identity.user_id, submission_id)
+    if submission is None:
+        raise_api("NOT_FOUND", "Submission not found", status=404)
+    command = await store.lookup_command(
+        identity.user_id,
+        submission_id,
+        command_id,
+    )
+    if command is None:
+        return SubmissionCommandSchema(
+            submission_id=submission_id,
+            command_id=command_id,
+            state="not_found",
+        )
+    return _command_response(command)
 
 
 @router.get("/submissions/{submission_id}/events")
