@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from agentscope.tool import Toolkit, ToolGroup
@@ -14,6 +15,7 @@ from ..constants import is_spawn_subagent_enabled
 from ..mcp_cm import is_cm_mcp_config, prepare_cm_mcp_clients
 from ..orchestration import RuntimeStateManager
 from ..orchestration.tools import PLAN_MODE_TOOL_NAMES, build_qwenpaw_data_tools
+from .host_capabilities import HostCapabilityClient
 from .mcp_client_log import MCP_CLIENT_RUN_ID, MCP_RUN_HEADER, log_mcp_client_event
 from .spawn_subagent import SpawnSubagent
 from .tools import AskUserQuestionTool, CronJobTool, CronToolServices
@@ -284,38 +286,79 @@ async def build_qwenpaw_data_toolkit(
                 cm_mcp_tool_prefixes=cm_mcp_tool_prefixes,
             ),
         )
-    toolkit = QwenPawDataToolkit(
-        # AgentScope always enables the basic group, so keep only tools that are
-        # valid in both Plan Mode and Agent Mode here.
-        tools=shared_tools,
-        mcps=_filtered_mcps(workspace_mcps, mcp_catalogs, _is_plan_safe_mcp_tool),
-        tool_groups=[
-            ToolGroup(
-                name="plan",
-                description="Tools for creating and revising a QwenPaw Data plan.",
-                instructions=(
-                    "Use these tools only to create or revise the DAG. "
-                    "You may use MCP metadata/read tools to clarify the plan, "
-                    "but SQL execution tools such as execute_sql are not "
-                    "available in planning mode."
-                ),
-            ),
-            ToolGroup(
-                name="agent",
-                description="Tools for executing a QwenPaw Data DAG and producing artifacts.",
-                instructions=(
-                    "Use update_subtask to record progress for each DAG node. "
-                    "Use workspace tools only for node execution and artifact generation."
-                ),
-                tools=agent_only_tools + workspace_tools,
-                mcps=_filtered_mcps(
-                    workspace_mcps,
-                    mcp_catalogs,
-                    _is_agent_only_mcp_tool,
-                ),
-                skills_or_loaders=workspace_skills,
-            ),
-        ],
+    host_capability_client: HostCapabilityClient | None = None
+    host_skills: list[Any] = []
+    request_context = (
+        dict(request_context_getter() or {})
+        if request_context_getter is not None
+        else {}
     )
+    bridge = request_context.get("capability_bridge")
+    if bridge is not None:
+        if not isinstance(bridge, dict):
+            raise ValueError("invalid_host_capability_bridge")
+        runtime_dir = workspace_dir or Path.cwd()
+        storage_dir = getattr(workspace, "host_workdir", None) or runtime_dir
+        host_capability_client = HostCapabilityClient(
+            bridge,
+            storage_workspace_dir=storage_dir,
+            runtime_workspace_dir=runtime_dir,
+        )
+        try:
+            shared_tools.extend(await host_capability_client.build_tools())
+            host_skills = await host_capability_client.load_skills()
+        except BaseException:
+            await host_capability_client.aclose()
+            raise
+    try:
+        toolkit = QwenPawDataToolkit(
+            # AgentScope always enables the basic group, so keep only tools that are
+            # valid in both Plan Mode and Agent Mode here.
+            tools=shared_tools,
+            skills_or_loaders=host_skills,
+            mcps=_filtered_mcps(
+                workspace_mcps,
+                mcp_catalogs,
+                _is_plan_safe_mcp_tool,
+            ),
+            tool_groups=[
+                ToolGroup(
+                    name="plan",
+                    description=(
+                        "Tools for creating and revising a QwenPaw Data plan."
+                    ),
+                    instructions=(
+                        "Use these tools only to create or revise the DAG. "
+                        "You may use MCP metadata/read tools to clarify the plan, "
+                        "but SQL execution tools such as execute_sql are not "
+                        "available in planning mode."
+                    ),
+                ),
+                ToolGroup(
+                    name="agent",
+                    description=(
+                        "Tools for executing a QwenPaw Data DAG and producing "
+                        "artifacts."
+                    ),
+                    instructions=(
+                        "Use update_subtask to record progress for each DAG node. "
+                        "Use workspace tools only for node execution and artifact "
+                        "generation."
+                    ),
+                    tools=agent_only_tools + workspace_tools,
+                    mcps=_filtered_mcps(
+                        workspace_mcps,
+                        mcp_catalogs,
+                        _is_agent_only_mcp_tool,
+                    ),
+                    skills_or_loaders=workspace_skills,
+                ),
+            ],
+        )
+    except BaseException:
+        if host_capability_client is not None:
+            await host_capability_client.aclose()
+        raise
     toolkit._qwenpaw_data_cm_mcp_tool_prefixes = cm_mcp_tool_prefixes
+    toolkit._qwenpaw_host_capability_client = host_capability_client
     return toolkit

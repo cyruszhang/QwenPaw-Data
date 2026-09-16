@@ -107,11 +107,21 @@ class ChatRuntime:
         """Enqueue steer text and wait until it is injected into the agent."""
         await self._executor.steer(text, artifact_comments)
 
-    async def run(self, chat_id: str, *, identity: Identity) -> None:
+    async def run(
+        self,
+        chat_id: str,
+        *,
+        identity: Identity,
+        capability_bridge: dict[str, Any] | None = None,
+    ) -> None:
         registry = get_runtime_registry()
         registry.register(chat_id, self)
         try:
-            await self._run(chat_id, identity=identity)
+            await self._run(
+                chat_id,
+                identity=identity,
+                capability_bridge=capability_bridge,
+            )
         finally:
             await self._executor.stop()
             registry.unregister(chat_id)
@@ -125,7 +135,13 @@ class ChatRuntime:
         await self._executor.stop()
         await self._finished.wait()
 
-    async def _run(self, chat_id: str, *, identity: Identity) -> None:
+    async def _run(
+        self,
+        chat_id: str,
+        *,
+        identity: Identity,
+        capability_bridge: dict[str, Any] | None = None,
+    ) -> None:
         chat = await self.chats.get(chat_id)
         if chat.status != "running":
             raise ValueError(f"chat not runnable: {chat.status}")
@@ -150,6 +166,8 @@ class ChatRuntime:
                 "datasource_id": chat.datasource_id,
                 "user_id": chat.identity.user_id,
             }
+            if capability_bridge is not None:
+                request_context["capability_bridge"] = dict(capability_bridge)
             agent = await host.get_agent(
                 mode="agent",
                 request_context=request_context,

@@ -4,11 +4,35 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
 from qwenpaw_data.host.core.api.models.chat import AskUserQuestionAnswerSchema
 from qwenpaw_data.host.core.api.models.common import ApiModel
+
+
+class CapabilityBridgeSchema(ApiModel):
+    """Short-lived Host callback bound to one App/task identity."""
+
+    protocol_version: Literal[1] = 1
+    endpoint: str = Field(min_length=1, max_length=2048)
+    token: str = Field(min_length=32, max_length=8192)
+
+    @field_validator("endpoint")
+    @classmethod
+    def valid_endpoint(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("endpoint must be an absolute HTTP(S) URL")
+        return value.rstrip("/")
 
 
 class SubmitRunRequest(ApiModel):
@@ -19,6 +43,7 @@ class SubmitRunRequest(ApiModel):
     text: str = Field(min_length=1)
     datasource_id: str = Field(min_length=1)
     agent_id: str = "default"
+    capability_bridge: CapabilityBridgeSchema | None = None
 
     @field_validator("text", "datasource_id")
     @classmethod

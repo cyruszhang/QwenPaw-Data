@@ -132,6 +132,25 @@ async def test_concurrent_retries_create_and_start_exactly_one_run(tmp_path, sta
         assert lookup["run"]["run_id"] == starts[0]
 
 
+async def test_submission_passes_capability_bridge_to_runtime(tmp_path, monkeypatch):
+    received = []
+
+    async def run(self, chat_id, *, identity, capability_bridge=None):
+        received.append((chat_id, capability_bridge))
+
+    monkeypatch.setattr(ChatRuntime, "run", run)
+    bridge = {
+        "protocol_version": 1,
+        "endpoint": "http://127.0.0.1:8088/api/pawapp-capabilities",
+        "token": "x" * 32,
+    }
+    async with service(tmp_path) as (http, _state):
+        response = await http.post(URL, json={**PAYLOAD, "capability_bridge": bridge})
+
+    assert response.status_code == 202
+    assert received == [(response.json()["run"]["run_id"], bridge)]
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -594,6 +613,7 @@ async def test_json_store_explicitly_declines_protocol(tmp_path, monkeypatch):
             "durable_submissions": False,
             "event_replay": False,
             "durable_commands": False,
+            "scoped_host_capabilities": False,
         }
         for response in (
             await http.post(URL, json=PAYLOAD),

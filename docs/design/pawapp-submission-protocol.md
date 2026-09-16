@@ -13,6 +13,11 @@ requires `durable_commands: true`. Older Engines lack this
 endpoint; JSON mode reports unsupported and returns 501 for submit/query/replay.
 Do not silently fall back to non-idempotent session/chat creation.
 
+Engines that accept task-scoped Host tools and Skills additionally advertise
+`scoped_host_capabilities: true`. A Host that supplies a capability envelope
+must require this flag before submission; older Engines remain compatible with
+submissions that do not carry an envelope.
+
 `GET /api/v1/capabilities/analysis` returns readiness version 1 and the boolean
 `model_configured`. It checks the explicit model, or the same local Agent
 Configuration preferences/environment fallback used by independent runs. The
@@ -36,9 +41,21 @@ Content-Type: application/json
   "submission_id": "sub_host_generated_id",
   "text": "Analyze revenue for the selected datasource",
   "datasource_id": "ds_revenue",
-  "agent_id": "default"
+  "agent_id": "default",
+  "capability_bridge": {
+    "protocol_version": 1,
+    "endpoint": "http://127.0.0.1:8088/api/pawapp-capabilities",
+    "token": "<task-bound bearer>"
+  }
 }
 ```
+
+`capability_bridge` is optional and ephemeral. The Engine keeps it in the run's
+in-memory request context, uses it only for the Host capability protocol, and
+never writes it to workspace files or event streams. The endpoint must be an
+absolute HTTP(S) URL without credentials, query, or fragment. The token is
+included in the idempotency digest, so a Host retry must reproduce the same
+envelope for a given durable submission.
 
 `protocol_version` and `agent_id` default to 1 and `default`. The ID accepts
 1–128 ASCII letters, digits, underscores, or hyphens. `text` and `datasource_id`
@@ -66,7 +83,8 @@ Successful acceptance and identical retries both return **202**:
 
 The `submissions` SQL table has a unique `(user_id, submission_id)` key and
 stores a request digest plus immutable session/run IDs. The digest covers the
-effective protocol version, agent, text, and datasource. The receipt, new
+effective protocol version, agent, text, datasource, and optional capability
+envelope. The receipt, new
 session, and first chat commit in **one transaction**. Only the transaction
 winner schedules the runtime; concurrent identical retries return its mapping.
 Reusing an ID with different inputs returns **409**. Different submission IDs

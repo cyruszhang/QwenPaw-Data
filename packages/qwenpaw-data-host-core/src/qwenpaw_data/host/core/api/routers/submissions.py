@@ -73,6 +73,7 @@ async def submission_capabilities(
         "durable_submissions": supported,
         "event_replay": supported,
         "durable_commands": supported,
+        "scoped_host_capabilities": supported,
     }
 
 
@@ -110,7 +111,14 @@ async def _accept_and_start(
             sessions=state.sessions,
             settlement=state.settlement,
         )
-        state.track(asyncio.create_task(runtime.run(record.run_id, identity=identity)))
+        run_kwargs = {"identity": identity}
+        if body.capability_bridge is not None:
+            run_kwargs["capability_bridge"] = body.capability_bridge.model_dump(
+                mode="json",
+            )
+        state.track(
+            asyncio.create_task(runtime.run(record.run_id, **run_kwargs)),
+        )
     return record
 
 
