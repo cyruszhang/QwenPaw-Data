@@ -614,6 +614,7 @@ async def test_json_store_explicitly_declines_protocol(tmp_path, monkeypatch):
             "event_replay": False,
             "durable_commands": False,
             "scoped_host_capabilities": False,
+            "artifact_handoff": False,
         }
         for response in (
             await http.post(URL, json=PAYLOAD),

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import mimetypes
 import os
 from datetime import datetime, timezone
 from functools import partial
@@ -181,6 +183,7 @@ class ChatRuntime:
                 identity=identity,
                 request_context=request_context,
             )
+            self._artifact_seen = self._artifact_snapshot()
             await self._load_runtime_config(identity)
             if _followup_enabled():
                 await self._start_followup(chat, envelope)
@@ -363,7 +366,7 @@ class ChatRuntime:
             return ()
 
     async def _after_event_callback(self, event: Any) -> None:
-        if self._biztrace is not None and self._is_tool_success(event):
+        if self._is_tool_success(event):
             # Delta first: the pipeline binds pending files to the coming
             # TOOL_RESULT_END, so order matters.
             await self._register_new_files()
@@ -393,9 +396,8 @@ class ChatRuntime:
 
     async def _register_new_files(self) -> None:
         """Diff the artifact directory; notify the stream and the algorithm."""
-        biztrace = self._biztrace
         envelope = self._envelope
-        if biztrace is None or envelope is None:
+        if envelope is None:
             return
         try:
             current = self._artifact_snapshot()
@@ -411,22 +413,56 @@ class ChatRuntime:
             files: dict[str, str] = {}
             for path in changed:
                 name = Path(path).name
+                metadata = await asyncio.to_thread(
+                    self._artifact_metadata,
+                    path,
+                )
+                if metadata is None:
+                    continue
                 await envelope.stream.artifact_registered(
                     id=create_id("artifact"),
                     name=name,
                     path=path,
+                    **metadata,
                     created_at=now,
                     updated_at=now,
                 )
                 files[name] = path
-            await biztrace.append(
-                {"kind": "artifact_delta", "payload": {"files": files}}
-            )
+            if files and self._biztrace is not None:
+                await self._biztrace.append(
+                    {"kind": "artifact_delta", "payload": {"files": files}}
+                )
         except Exception:
             logger.exception(
-                "biztrace: failed to register artifact files for chat %s",
-                biztrace.chat_id,
+                "failed to register artifact files for chat %s",
+                self._run_context.chat_id if self._run_context else "unknown",
             )
+
+    def _artifact_metadata(self, path: str) -> dict[str, Any] | None:
+        ctx = self._run_context
+        if ctx is None:
+            return None
+        candidate = Path(ctx.paths.artifact_dir) / path
+        try:
+            before = candidate.stat()
+            digest = hashlib.sha256()
+            with candidate.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+            after = candidate.stat()
+        except OSError:
+            return None
+        if (before.st_size, before.st_mtime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            return None
+        media_type = mimetypes.guess_type(candidate.name)[0]
+        return {
+            "media_type": media_type or "application/octet-stream",
+            "size_bytes": after.st_size,
+            "digest": f"sha256:{digest.hexdigest()}",
+        }
 
     def _artifact_snapshot(self) -> dict[str, tuple[int, int]]:
         ctx = self._run_context

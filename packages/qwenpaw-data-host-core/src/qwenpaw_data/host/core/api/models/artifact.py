@@ -12,6 +12,11 @@ class ArtifactSchema(ApiModel):
     chat_id: str | None = None
     name: str
     path: str
+    # Added in the artifact-handoff capability. Optional only so historical
+    # stream rows created by older Engines remain readable.
+    media_type: str | None = None
+    size_bytes: int | None = None
+    digest: str | None = None
     created_at: datetime
     updated_at: datetime
 

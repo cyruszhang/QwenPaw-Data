@@ -71,7 +71,9 @@ Each SSE frame carries `id` (dense per-chat sequence number), `event`
 close the stream) · `message` / `content` (assistant text, reasoning, tool
 calls and outputs, media) · `task_status` (DAG plan snapshots) ·
 `biz_event` / `segment` / `artifact.registered` / `followup.generated`
-(reserved; producers arrive in later waves).
+(structured execution metadata). Artifact registrations include media type,
+size, and SHA-256 digest. Digest-bound artifact reads verify session ownership
+and reject content that changed after registration.
 
 ### Environment variables
 

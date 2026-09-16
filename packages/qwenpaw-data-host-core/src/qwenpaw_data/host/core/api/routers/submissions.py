@@ -74,6 +74,7 @@ async def submission_capabilities(
         "event_replay": supported,
         "durable_commands": supported,
         "scoped_host_capabilities": supported,
+        "artifact_handoff": supported,
     }
 
 

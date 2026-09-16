@@ -18,6 +18,14 @@ Engines that accept task-scoped Host tools and Skills additionally advertise
 must require this flag before submission; older Engines remain compatible with
 submissions that do not carry an envelope.
 
+Engines used by an artifact-aware adapter advertise `artifact_handoff: true`.
+After every successful tool result they emit `artifact.registered` for changed
+files even when BizTrace is disabled. Each event includes normalized path,
+media type, byte size, and `sha256:` digest. A Host copies the file through
+`GET /api/v1/sessions/{session_id}/artifacts/file?path=...&digest=...`; the
+Engine requires the caller to own the session and returns 409 if the live file
+no longer matches that immutable event version.
+
 `GET /api/v1/capabilities/analysis` returns readiness version 1 and the boolean
 `model_configured`. It checks the explicit model, or the same local Agent
 Configuration preferences/environment fallback used by independent runs. The
