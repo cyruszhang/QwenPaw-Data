@@ -47,6 +47,7 @@ class AskUserQuestionTimeoutResultSchema(ApiModel):
 
 class SessionSchema(ApiModel):
     id: str
+    display_code: str
     agent_id: str
     title: str
     status: Literal["idle", "running"]
