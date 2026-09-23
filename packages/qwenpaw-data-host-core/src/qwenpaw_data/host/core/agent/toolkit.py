@@ -16,6 +16,7 @@ from ..mcp_cm import is_cm_mcp_config, prepare_cm_mcp_clients
 from ..orchestration import RuntimeStateManager
 from ..orchestration.tools import PLAN_MODE_TOOL_NAMES, build_qwenpaw_data_tools
 from .host_capabilities import HostCapabilityClient
+from .task_experience import build_task_experience_tools
 from .mcp_client_log import MCP_CLIENT_RUN_ID, MCP_RUN_HEADER, log_mcp_client_event
 from .spawn_subagent import SpawnSubagent
 from .tools import AskUserQuestionTool, CronJobTool, CronToolServices
@@ -142,11 +143,7 @@ class _FilteredMCPClient:
 
     async def list_tools(self) -> list[Any]:
         tools = await self._catalog.list_tools()
-        return [
-            tool
-            for tool in tools
-            if self._predicate(getattr(tool, "name", ""))
-        ]
+        return [tool for tool in tools if self._predicate(getattr(tool, "name", ""))]
 
 
 def _filtered_mcps(
@@ -155,8 +152,7 @@ def _filtered_mcps(
     predicate: Any,
 ) -> list[Any]:
     return [
-        _FilteredMCPClient(client, catalogs[id(client)], predicate)
-        for client in mcps
+        _FilteredMCPClient(client, catalogs[id(client)], predicate) for client in mcps
     ]
 
 
@@ -168,10 +164,9 @@ def _inject_run_header(mcps: list[Any]) -> None:
     The API token is injected only for the recognized CM endpoint and is never
     persisted into the workspace's ``.mcp`` file.
     """
-    api_token = (
-        (os.environ.get("QWENPAW_DATA_CLIENT_API_TOKEN") or "").strip()
-        or (os.environ.get("QWENPAW_DATA_API_TOKEN") or "").strip()
-    )
+    api_token = (os.environ.get("QWENPAW_DATA_CLIENT_API_TOKEN") or "").strip() or (
+        os.environ.get("QWENPAW_DATA_API_TOKEN") or ""
+    ).strip()
     for client in mcps:
         mcp_config = getattr(client, "mcp_config", None)
         if getattr(mcp_config, "type", None) != "http_mcp":
@@ -260,9 +255,7 @@ async def build_qwenpaw_data_toolkit(
     _inject_run_header(workspace_mcps)
     # One shared discovery catalog per client: plan/agent views and sub-agent
     # toolkits reuse it, so tools/list hits the server once per process.
-    mcp_catalogs = {
-        id(client): _MCPToolCatalog(client) for client in workspace_mcps
-    }
+    mcp_catalogs = {id(client): _MCPToolCatalog(client) for client in workspace_mcps}
     subagent_mcps = _filtered_mcps(
         workspace_mcps,
         mcp_catalogs,
@@ -294,6 +287,8 @@ async def build_qwenpaw_data_toolkit(
         else {}
     )
     bridge = request_context.get("capability_bridge")
+    if request_context.get("analysis_experience") is not None:
+        agent_only_tools.extend(build_task_experience_tools(request_context_getter))
     if bridge is not None:
         if not isinstance(bridge, dict):
             raise ValueError("invalid_host_capability_bridge")
@@ -344,6 +339,10 @@ async def build_qwenpaw_data_toolkit(
                         "Use update_subtask to record progress for each DAG node. "
                         "Use workspace tools only for node execution and artifact "
                         "generation."
+                        " Report meaningful stage changes with report_analysis_progress."
+                        " Before finishing, use publish_analysis_artifact to select"
+                        " the finished report and useful charts for the user; keep"
+                        " drafts, source data and diagnostics app_only."
                     ),
                     tools=agent_only_tools + workspace_tools,
                     mcps=_filtered_mcps(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,10 +13,14 @@ pytest.importorskip("fastapi")
 import httpx  # noqa: E402
 
 from qwenpaw_data.host.core.api.app import create_app  # noqa: E402
+from qwenpaw_data.host.core.runtime.chat_runtime import ChatRuntime  # noqa: E402
 
 
 @asynccontextmanager
 async def service_client(tmp_path: Path, monkeypatch, **env: str):
+    # These are storage/fork tests. A real background runtime races the seeded
+    # completed state and can overwrite it with a Docker/model failure.
+    monkeypatch.setattr(ChatRuntime, "run", AsyncMock())
     monkeypatch.delenv("QWENPAW_DATA_API_TOKEN", raising=False)
     monkeypatch.delenv("QWENPAW_DATA_DB_URL", raising=False)
     monkeypatch.delenv("QWENPAW_DATA_STORE", raising=False)

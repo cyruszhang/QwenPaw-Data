@@ -132,6 +132,65 @@ async def test_concurrent_retries_create_and_start_exactly_one_run(tmp_path, sta
         assert lookup["run"]["run_id"] == starts[0]
 
 
+async def test_existing_session_turns_preserve_context_and_identity(tmp_path, starts):
+    async with service(tmp_path) as (http, state):
+        headers = {"X-User-Id": "alice"}
+        response = await http.post(
+            "/api/v1/sessions", json={"title": "March GAAP"}, headers=headers
+        )
+        session_id = response.json()["session"]["id"]
+        readiness_url = f"/api/v1/sessions/{session_id}/submission-readiness"
+        assert (await http.get(readiness_url, headers=headers)).json() == {
+            "ready": True
+        }
+        assert (
+            await http.get(readiness_url, headers={"X-User-Id": "bob"})
+        ).status_code == 404
+        body = {
+            **PAYLOAD,
+            "session_id": session_id,
+            "artifact_comments": [
+                {
+                    "path": "report.md",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "comment": "Explain this",
+                },
+            ],
+        }
+        accepted = await http.post(URL, json=body, headers=headers)
+        assert accepted.status_code == 202, accepted.text
+        run = accepted.json()["run"]
+        assert (await http.get(readiness_url, headers=headers)).json() == {
+            "ready": False
+        }
+        assert run["session_id"] == session_id
+        chat = await state.chats.get(run["run_id"])
+        assert chat.artifact_comments[0]["comment"] == "Explain this"
+        assert (await http.post(URL, json=body, headers=headers)).json()["run"] == run
+        assert await counts(state) == [1, 1, 1]
+        assert (
+            await http.post(
+                URL, json={**body, "submission_id": "another"}, headers=headers
+            )
+        ).status_code == 409
+        denied = await http.post(URL, json=body, headers={"X-User-Id": "bob"})
+        assert denied.status_code == 404
+        assert (
+            await http.get(
+                f"/api/v1/sessions/{session_id}/chats/{run['run_id']}",
+                headers={"X-User-Id": "bob"},
+            )
+        ).status_code == 404
+        await finish(state, run)
+        second = await http.post(
+            URL, json={**body, "submission_id": "next"}, headers=headers
+        )
+        assert second.status_code == 202, second.text
+        assert second.json()["run"]["session_id"] == session_id
+        assert await counts(state) == [2, 1, 2]
+
+
 async def test_submission_passes_capability_bridge_to_runtime(tmp_path, monkeypatch):
     received = []
 
@@ -615,6 +674,8 @@ async def test_json_store_explicitly_declines_protocol(tmp_path, monkeypatch):
             "durable_commands": False,
             "scoped_host_capabilities": False,
             "artifact_handoff": False,
+            "analysis_experience": False,
+            "session_submissions": False,
         }
         for response in (
             await http.post(URL, json=PAYLOAD),

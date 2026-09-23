@@ -38,6 +38,38 @@ missing. Durable submission protocol support alone does not imply readiness.
 
 ## Submit and reconcile
 
+### Additive capabilities: analysis experience and existing sessions
+
+`analysis_experience: true` advertises typed `analysis.progress` events with
+stage `read_data`, `confirm_scope`, `analyze`, or `publish_report`. Private
+runtime tools let the domain agent declare stages and publish selected files.
+Ordinary artifact discovery emits explicit `diagnostic` / `app_only` metadata;
+filenames are not a publication decision. Intentional artifact publication
+verifies the file and adds the shared presentation fields: `schema_version: 1`,
+`role`, `kind`, `visibility`, `preview`, and `rank`. Host owns generic rendering
+and authorization; Engine owns the domain meaning and selected deliverables.
+
+`session_submissions: true` permits optional `session_id`, `attachment_ids`,
+and `artifact_comments` in the submission below. The existing session must
+belong to the supplied trusted namespace. Attachments must belong to the same
+session and namespace. A running turn blocks a second new submission; retries
+of the original receipt remain idempotent. Session update, chat creation and
+receipt commit in one transaction. Subsequent completed turns may reuse the
+same session. All context participates in the digest; omitted/empty additive
+fields retain the original protocol-1 digest for old accepted submissions.
+`GET /api/v1/sessions/{session_id}/submission-readiness` checks ownership and
+returns `ready: false` while a turn is running; unavailable/foreign sessions
+return 404. This read-only preflight prevents admission of legacy or busy
+sessions; the transactional submission still rechecks both conditions.
+
+The authenticated Host proxy creates native sessions under the same scoped
+namespace, admits each turn as a Direct task, and routes answers/cancellation
+through durable commands. It must not forward browser raw submissions. Old
+unscoped sessions require an explicit migration or a new session, not implicit
+ownership reassignment. This is not a claim that all legacy Engine APIs provide
+tenant isolation. Dataset filters and disabled clarification are not supported
+by this submission contract and must not be silently ignored.
+
 ```http
 POST /api/v1/submissions
 Authorization: Bearer <backend service token>

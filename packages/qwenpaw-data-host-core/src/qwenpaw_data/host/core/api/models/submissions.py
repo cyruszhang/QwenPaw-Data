@@ -10,6 +10,7 @@ from pydantic import Field, field_validator, model_validator
 
 from qwenpaw_data.host.core.api.models.chat import AskUserQuestionAnswerSchema
 from qwenpaw_data.host.core.api.models.common import ApiModel
+from qwenpaw_data.host.core.api.models.artifact import ArtifactCommentSchema
 
 
 class CapabilityBridgeSchema(ApiModel):
@@ -44,6 +45,11 @@ class SubmitRunRequest(ApiModel):
     datasource_id: str = Field(min_length=1)
     agent_id: str = "default"
     capability_bridge: CapabilityBridgeSchema | None = None
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=32)
+    artifact_comments: list[ArtifactCommentSchema] = Field(
+        default_factory=list, max_length=64
+    )
 
     @field_validator("text", "datasource_id")
     @classmethod
@@ -53,8 +59,13 @@ class SubmitRunRequest(ApiModel):
         return value
 
     def request_digest(self) -> str:
+        payload = self.model_dump(exclude={"submission_id"})
+        # Preserve protocol-1 digests for accepted submissions from older Hosts.
+        for key in ("session_id", "attachment_ids", "artifact_comments"):
+            if not payload[key]:
+                payload.pop(key)
         encoded = json.dumps(
-            self.model_dump(exclude={"submission_id"}),
+            payload,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,

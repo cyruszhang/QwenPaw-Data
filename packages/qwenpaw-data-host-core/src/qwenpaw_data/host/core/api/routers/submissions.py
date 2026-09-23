@@ -75,6 +75,8 @@ async def submission_capabilities(
         "durable_commands": supported,
         "scoped_host_capabilities": supported,
         "artifact_handoff": supported,
+        "analysis_experience": supported,
+        "session_submissions": supported,
     }
 
 
@@ -90,11 +92,48 @@ async def analysis_capabilities(
     }
 
 
+@router.get("/sessions/{session_id}/submission-readiness")
+async def session_submission_readiness(
+    session_id: str,
+    identity: Identity = Depends(get_identity),
+    state: ServiceState = Depends(get_state),
+) -> dict:
+    try:
+        session = await state.sessions.get(session_id)
+        if session.identity.user_id != identity.user_id:
+            raise LookupError("session not found")
+        return {"ready": not await state.sessions.has_active_chat(session_id)}
+    except Exception as exc:
+        http = map_domain_error(exc)
+        if http:
+            raise http from exc
+        raise
+
+
 async def _accept_and_start(
     body: SubmitRunRequest,
     identity: Identity,
     state: ServiceState,
 ) -> SubmissionRecord:
+    # A replay returns the original mapping even after files/session were deleted.
+    existing = await _store(state).lookup(identity.user_id, body.submission_id)
+    if existing is not None:
+        _store(state)._check_digest(existing, body.request_digest())
+        return existing
+    attachments = []
+    if body.session_id is not None:
+        session = await state.sessions.get(body.session_id)
+        if session.identity.user_id != identity.user_id:
+            raise LookupError("session not found")
+        host = state.hosts.get(session_id=session.id)
+        attachments = await state.attachments.require_for_session(
+            identity.user_id,
+            session.id,
+            body.attachment_ids,
+            workspace=host.paths.workspace,
+        )
+    elif body.attachment_ids or body.artifact_comments:
+        raise ValueError("session context requires an existing session")
     record, created = await _store(state).submit(
         identity=identity,
         submission_id=body.submission_id,
@@ -102,6 +141,11 @@ async def _accept_and_start(
         text=body.text,
         datasource_id=body.datasource_id,
         agent_id=body.agent_id,
+        session_id=body.session_id,
+        attachments=[item.to_ref() for item in attachments],
+        artifact_comments=[
+            item.model_dump(mode="json") for item in body.artifact_comments
+        ],
     )
     if created:
         runtime = ChatRuntime(

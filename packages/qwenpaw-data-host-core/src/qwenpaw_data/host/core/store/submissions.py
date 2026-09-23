@@ -23,10 +23,16 @@ from qwenpaw_data.host.core.db.tables import (
     ChatRow,
     SubmissionCommandRow,
     SubmissionRow,
+    SessionRow,
 )
 from qwenpaw_data.host.core.domain.identity import Identity
 from qwenpaw_data.host.core.domain.session import Session
-from qwenpaw_data.host.core.store.sql_store import _chat_to_row, _session_to_row
+from qwenpaw_data.host.core.store.sql_store import (
+    _chat_to_row,
+    _session_to_row,
+    _session_from_row,
+    _apply_session,
+)
 from qwenpaw_data.host.core.utils.ids import create_id
 from qwenpaw_data.host.core.utils.time import utcnow
 
@@ -184,29 +190,21 @@ class SQLSubmissionStore:
         text: str,
         datasource_id: str,
         agent_id: str,
+        session_id: str | None = None,
+        attachments: list[dict] | None = None,
+        artifact_comments: list[dict] | None = None,
     ) -> tuple[SubmissionRecord, bool]:
         existing = await self.lookup(identity.user_id, submission_id)
         if existing is not None:
             self._check_digest(existing, request_digest)
             return existing, False
 
-        session = Session.create(
-            identity=identity,
-            agent_id=agent_id,
-            datasource_id=datasource_id,
-            channel="pawapp",
-        )
-        chat = session.open_chat(
-            text=text,
-            datasource_id=datasource_id,
-            has_active_chat=False,
-        )
         row = SubmissionRow(
             user_id=identity.user_id,
             submission_id=submission_id,
             request_digest=request_digest,
-            session_id=session.id,
-            run_id=chat.id,
+            session_id=session_id or create_id("ses"),
+            run_id=create_id("chat"),
         )
         try:
             async with self._sessions() as db, db.begin():
@@ -214,7 +212,48 @@ class SQLSubmissionStore:
                 # The DB unique key arbitrates concurrent submissions. Do not
                 # call runtime/model code until all three rows have committed.
                 await db.flush()
-                db.add(_session_to_row(session))
+                session_row = None
+                if session_id is not None:
+                    session_row = await db.scalar(
+                        select(SessionRow)
+                        .where(
+                            SessionRow.id == session_id,
+                            SessionRow.user_id == identity.user_id,
+                            SessionRow.deleted_at.is_(None),
+                        )
+                        .with_for_update()
+                    )
+                    if session_row is None:
+                        raise LookupError("session not found")
+                    session = _session_from_row(session_row)
+                else:
+                    session = Session.create(
+                        identity=identity,
+                        agent_id=agent_id,
+                        datasource_id=datasource_id,
+                        channel="pawapp",
+                    )
+                    session.id = row.session_id
+                active = await db.scalar(
+                    select(
+                        exists().where(
+                            ChatRow.session_id == session.id,
+                            ChatRow.status == "running",
+                        )
+                    )
+                )
+                chat = session.open_chat(
+                    text=text,
+                    datasource_id=datasource_id,
+                    has_active_chat=bool(active),
+                    attachments=attachments,
+                    artifact_comments=artifact_comments,
+                )
+                chat.id = row.run_id
+                if session_row is not None:
+                    _apply_session(session_row, session)
+                else:
+                    db.add(_session_to_row(session))
                 db.add(_chat_to_row(chat))
         except IntegrityError:
             existing = await self.lookup(identity.user_id, submission_id)

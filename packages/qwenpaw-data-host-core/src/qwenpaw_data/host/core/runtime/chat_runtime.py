@@ -18,6 +18,8 @@ from qwenpaw_data.host.core.algo.biztrace.transformer import BizTraceTransformer
 from qwenpaw_data.host.core.algo.followup.recommend import FollowUpRecommend
 from qwenpaw_data.host.core.algo.settlement import SettlementManager, SettlementSettings
 from qwenpaw_data.host.core.domain.chat import Chat
+from qwenpaw_data.host.core.api.models.artifact import ArtifactPresentationSchema
+from qwenpaw_data.host.core.artifact_paths import ArtifactPathContext
 from qwenpaw_data.host.core.domain.identity import Identity
 from qwenpaw_data.host.core.orchestration.tools import PLAN_TOOL_NAMES
 from qwenpaw_data.host.core.registry import QwenPawDataHostRegistry
@@ -167,6 +169,7 @@ class ChatRuntime:
             request_context = {
                 "datasource_id": chat.datasource_id,
                 "user_id": chat.identity.user_id,
+                "analysis_experience": self,
             }
             if capability_bridge is not None:
                 request_context["capability_bridge"] = dict(capability_bridge)
@@ -184,6 +187,7 @@ class ChatRuntime:
                 request_context=request_context,
             )
             self._artifact_seen = self._artifact_snapshot()
+            await self.report_analysis_progress("read_data")
             await self._load_runtime_config(identity)
             if _followup_enabled():
                 await self._start_followup(chat, envelope)
@@ -424,6 +428,13 @@ class ChatRuntime:
                     name=name,
                     path=path,
                     **metadata,
+                    presentation={
+                        "role": "diagnostic",
+                        "kind": "data/diagnostic",
+                        "visibility": "app_only",
+                        "preview": "none",
+                        "rank": 300,
+                    },
                     created_at=now,
                     updated_at=now,
                 )
@@ -438,11 +449,73 @@ class ChatRuntime:
                 self._run_context.chat_id if self._run_context else "unknown",
             )
 
+    async def report_analysis_progress(self, stage: str) -> None:
+        if self._envelope is None:
+            raise RuntimeError("analysis stream is unavailable")
+        # OutputStream validates and persists the typed event before returning.
+        await self._envelope.stream.append(
+            {"object": "analysis.progress", "stage": stage}
+        )
+
+    async def publish_analysis_artifact(
+        self,
+        path: str,
+        role: str,
+        kind: str,
+        visibility: str,
+    ) -> None:
+        ctx, envelope = self._run_context, self._envelope
+        if ctx is None or envelope is None:
+            raise RuntimeError("analysis stream is unavailable")
+        root = Path(ctx.paths.artifact_dir)
+        resolved = ArtifactPathContext(root, root).resolve_ref(path)
+        if not resolved.host_path.is_file():
+            raise ValueError("artifact must be an existing session file")
+        metadata = await asyncio.to_thread(
+            self._artifact_metadata, resolved.relative_path
+        )
+        if metadata is None:
+            raise ValueError("artifact changed during verification; retry publication")
+        presentation = ArtifactPresentationSchema(
+            role=role,
+            kind=kind,
+            visibility=visibility,
+            preview=(
+                "inline"
+                if metadata["media_type"]
+                in {
+                    "text/html",
+                    "text/markdown",
+                    "text/plain",
+                }
+                and visibility == "chat"
+                else "link" if visibility == "chat" else "none"
+            ),
+            rank={"primary": 0, "supporting": 20, "source": 200, "diagnostic": 300}[
+                role
+            ],
+        )
+        now = datetime.now(timezone.utc)
+        await envelope.stream.artifact_registered(
+            id=create_id("artifact"),
+            name=resolved.host_path.name,
+            path=resolved.relative_path,
+            **metadata,
+            presentation=presentation.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+        )
+        # Do not immediately republish the same bytes as an automatic diagnostic.
+        stamp = self._artifact_snapshot().get(resolved.relative_path)
+        if stamp is not None:
+            self._artifact_seen[resolved.relative_path] = stamp
+
     def _artifact_metadata(self, path: str) -> dict[str, Any] | None:
         ctx = self._run_context
         if ctx is None:
             return None
-        candidate = Path(ctx.paths.artifact_dir) / path
+        root = Path(ctx.paths.artifact_dir)
+        candidate = ArtifactPathContext(root, root).resolve_path(path)
         try:
             before = candidate.stat()
             digest = hashlib.sha256()
